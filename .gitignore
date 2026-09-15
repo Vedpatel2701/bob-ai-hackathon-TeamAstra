@@ -94,3 +94,17 @@ logs/
 .terraform/
 *.tfstate
 *.tfstate.backup
+# -- ML models and data (generated at runtime) ---------------------------------
+src/ml/models/*.pkl
+src/ml/data/shipments.csv
+src/ml/data/fleet.csv
+
+# -- Test / debug scripts ------------------------------------------------------
+test_api.py
+test_copilot.py
+debug_optimizer.py
+check_capacity.py
+
+# -- Python cache --------------------------------------------------------------
+**/__pycache__/
+**/*.pyc

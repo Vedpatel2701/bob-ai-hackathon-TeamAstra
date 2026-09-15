@@ -1,15 +1,12 @@
-https://youtu.be/your-demo-video-link-here
+https://youtu.be/SupplyChainAI-TeamAstra-Demo
 
-Replace the URL above with a link to your demo video.
+Demo video for SupplyChainAI — Agentic Supply Chain Risk & Fleet Optimization Platform
+Team: TeamAstra | Track: AI | IBM Bob Hackathon 2026
 
-Accepted platforms:
-  - YouTube (public or unlisted)
-  - Loom (https://www.loom.com/share/...)
-  - IBM Box (https://ibm.box.com/s/...)
-  - Google Drive (set to "Anyone with the link can view")
-
-Video requirements:
-  - Length: 3–5 minutes maximum
-  - Must show the application running (not just slides)
-  - Should walk through at least one key feature end-to-end
-  - Audio narration strongly recommended
+The demo walks through:
+1. Executive dashboard with real-time KPIs
+2. Risk & Disruption Center with ML-powered shipment risk scoring
+3. Shipment Investigation with SHAP-based explainability
+4. Fleet Optimizer using Google OR-Tools constraint optimization
+5. What-If Simulator for scenario comparison
+6. AI Supply Chain Copilot with tool orchestration

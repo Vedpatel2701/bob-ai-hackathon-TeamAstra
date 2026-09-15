@@ -1,47 +1,57 @@
-# Source Code
+# SupplyChainAI — Source Code
 
-Place all your project's source code in this folder.
+## Quick Start
 
-## Structure Guidelines
+### Prerequisites
+- Python 3.11+
+- Node.js 18+
 
-Organize your code logically. Here are common patterns — use whatever fits
-your project:
+### 1. Generate data and train the ML model
 
-### Web Application
-```
-src/
-  backend/        ← API server code
-  frontend/       ← UI code
-  shared/         ← Shared utilities/types
+```bash
+python ml/data/generate_dataset.py
+python ml/training/train_model.py
 ```
 
-### Data / AI Project
-```
-src/
-  data/           ← Data ingestion / preprocessing
-  models/         ← ML model code
-  api/            ← Serving layer
-  notebooks/      ← Jupyter notebooks (exploration)
+### 2. Start the backend (from this directory)
+
+```bash
+cd backend
+uvicorn main:app --reload --port 8000
 ```
 
-### CLI / Script-based Tool
+API: http://localhost:8000  
+Docs: http://localhost:8000/docs
+
+### 3. Start the frontend (new terminal)
+
+```bash
+cd frontend
+npm install   # first time only
+npm run dev
 ```
-src/
-  cli/            ← CLI entry points
-  lib/            ← Core logic
-  utils/          ← Helpers
-```
 
-## Important Files to Include
+Dashboard: http://localhost:3000
 
-- `requirements.txt` or `package.json` — dependency manifest
-- `.env.example` — template for environment variables (NEVER commit `.env`)
-- Any database migration files
-- Configuration files
+## Structure
 
-## What NOT to Include in src/
+| Directory | Contents |
+|---|---|
+| `backend/` | FastAPI application, services, agents, optimization |
+| `ml/` | Synthetic data generation, model training, inference, SHAP |
+| `rag/` | Operational policy documents, TF-IDF retrieval |
+| `frontend/` | Next.js dashboard, all UI pages |
 
-- `.env` files with real secrets
-- Large binary files (use Git LFS or link externally)
-- `node_modules/` or `venv/` (these are in `.gitignore`)
-- Build artifacts (`dist/`, `build/`, `__pycache__/`)
+## Key APIs
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/health` | GET | Health check |
+| `/api/shipments` | GET | All shipments with ML risk scores |
+| `/api/shipments/high-risk` | GET | High/critical risk shipments |
+| `/api/fleet` | GET | Fleet vehicles with availability |
+| `/api/predict` | POST | ML disruption prediction + SHAP factors |
+| `/api/optimize` | POST | OR-Tools fleet optimization |
+| `/api/simulate` | POST | What-if scenario recalculation |
+| `/api/copilot` | POST | Agentic AI tool orchestration |
+| `/api/metrics` | GET | Executive KPIs and charts data |
