@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { Play, Loader2, ArrowRight, TrendingUp, TrendingDown } from 'lucide-react';
 import { api, type SimulateResponse } from '@/lib/api';
+import { useOperations } from '@/lib/OperationsContext';
 import { pct, fmt } from '@/lib/utils';
 
 const DEFAULT: { weather: number; traffic: number; port: number } = { weather: 0, traffic: 0, port: 0 };
@@ -14,6 +15,8 @@ export default function SimulatorPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
 
+  const { recordSimulation } = useOperations();
+
   const run = async () => {
     setRunning(true);
     setError('');
@@ -25,9 +28,12 @@ export default function SimulatorPage() {
         vehicle_unavailable_ids: [],
       });
       setResult(r);
+      const deltaSummary = `Weather: ${weather > 0 ? '+' : ''}${(weather * 100).toFixed(0)}%, Traffic: ${traffic > 0 ? '+' : ''}${(traffic * 100).toFixed(0)}%, Port: ${port > 0 ? '+' : ''}${(port * 100).toFixed(0)}%`;
+      recordSimulation(deltaSummary, r.affected_shipments, r.delta.high_risk_count);
     } catch (e) { setError(String(e)); }
     finally { setRunning(false); }
   };
+
 
   const reset = () => { setWeather(0); setTraffic(0); setPort(0); setResult(null); };
 

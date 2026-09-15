@@ -22,19 +22,20 @@ TOOL_DESCRIPTIONS = {
     "optimize_fleet": "Run the fleet optimizer to produce recommended vehicle assignments",
     "run_simulation": "Simulate the effect of changed conditions on risk and fleet metrics",
     "get_policy": "Retrieve relevant operational policy for a given situation",
+    "get_regional_risk": "Analyze risk distribution and identify the highest-risk regions/corridors",
 }
 
 # Intent patterns mapped to primary tools
 INTENT_PATTERNS = [
-    (r"(highest.?risk|most.?at.?risk|critical|urgent|immediate attention)", ["get_high_risk_shipments"]),
-    (r"(why.*(delayed|risk|at risk|disrupted)|root.?cause|factors|contributing)", ["get_shipment_details", "analyze_root_cause"]),
-    (r"(what.*happen|simulate|if.*weather|if.*traffic|scenario|what.?if)", ["run_simulation"]),
-    (r"(optimize|fleet.*assign|assign.*vehicle|best.*vehicle)", ["get_fleet_status", "optimize_fleet"]),
+    (r"(region|regional|corridor|city|origin|geograph|most risky|riskiest)", ["get_regional_risk"]),
+    (r"(highest.?risk|most.?at.?risk|critical|urgent|immediate attention|attention)", ["get_high_risk_shipments"]),
+    (r"(why.*(delayed|risk|at risk|disrupted)|root.?cause|factors|contributing|shp?-\d+|shipment\s+#?\d+)", ["get_shipment_details", "analyze_root_cause"]),
+    (r"(what.*happen|simulate|if.*weather|if.*traffic|scenario|what.?if|congest)", ["run_simulation"]),
+    (r"(optimize|fleet.*assign|assign.*vehicle|best.*vehicle|reallocat)", ["get_fleet_status", "optimize_fleet"]),
     (r"(fleet|vehicles?|available|availability|utilization)", ["get_fleet_status"]),
     (r"(miss.*deadline|deadline|on.?time|overdue)", ["get_high_risk_shipments"]),
-    (r"(policy|procedure|protocol|playbook|rule|should we)", ["get_policy"]),
-    (r"(recommend|should I do|action|next step)", ["get_shipment_details", "analyze_root_cause"]),
-    (r"(sh-\d+|shipment\s+\d+|shipment\s+sh)", ["get_shipment_details", "analyze_root_cause"]),
+    (r"(policy|procedure|protocol|playbook|rule|should we|guideline)", ["get_policy"]),
+    (r"(recommend|should I do|action|next step)", ["get_high_risk_shipments", "get_fleet_status"]),
     (r"(today.*shipment|all.*shipment|show.*shipment|list.*shipment)", ["get_shipments"]),
 ]
 
@@ -273,6 +274,32 @@ class SupplyChainAgent:
                 return docs, f"Retrieved {len(docs)} policy document(s)"
             return [], "Policy documents unavailable"
 
+        elif tool_name == "get_regional_risk":
+            df = self._data.get_shipments()
+            risk_cache = self._data.get_all_risk()
+            df_copy = df.copy()
+            df_copy["_risk_score"] = [risk_cache.get(str(sid), {}).get("risk_score", 0.0) for sid in df_copy["shipment_id"]]
+            df_copy["_disruption"] = df_copy["disruption"]
+            df_copy["_delay"] = [risk_cache.get(str(sid), {}).get("expected_delay_hours", 0.0) for sid in df_copy["shipment_id"]]
+
+            agg = df_copy.groupby("origin").agg(
+                avg_risk=("_risk_score", "mean"),
+                shipment_count=("shipment_id", "count"),
+                disruption_rate=("_disruption", "mean"),
+                avg_delay=("_delay", "mean"),
+            ).reset_index().sort_values("avg_risk", ascending=False)
+
+            top_regions = agg.to_dict(orient="records")
+            highest = top_regions[0] if top_regions else {}
+            return {
+                "highest_region": highest.get("origin", "Unknown"),
+                "highest_risk_score": highest.get("avg_risk", 0.0),
+                "shipment_count": highest.get("shipment_count", 0),
+                "disruption_rate": highest.get("disruption_rate", 0.0),
+                "avg_delay": highest.get("avg_delay", 0.0),
+                "all_regions": top_regions[:5],
+            }, f"Analyzed regional risk: {highest.get('origin', 'Unknown')} is highest-risk ({highest.get('avg_risk', 0.0):.1%} risk score)"
+
         return {}, f"Unknown tool: {tool_name}"
 
     def _generate_answer(
@@ -282,72 +309,99 @@ class SupplyChainAgent:
         rag_context: str,
         shipment_id: Optional[str],
     ) -> str:
-        """Generate a structured natural-language response from tool results."""
+        """Generate a structured, question-specific response containing analysis, results, and recommendations."""
         parts = []
-        msg_lower = message.lower()
 
-        # High-risk shipments response
+        # ── 1. Specific Shipment Deep-Dive (Root Cause & Details) ──────────────
+        if "analyze_root_cause" in results:
+            analysis = results["analyze_root_cause"]
+            sid = analysis.get("shipment_id", shipment_id or "selected shipment")
+            prob = analysis.get("disruption_probability", 0)
+            delay = analysis.get("expected_delay_hours", 0)
+            factors = analysis.get("top_factors", [])
+
+            details = results.get("get_shipment_details", {})
+            route_str = f"{details.get('origin', '?')} → {details.get('destination', '?')}" if isinstance(details, dict) and details.get("origin") else "Active route"
+            priority_str = details.get("priority", "HIGH") if isinstance(details, dict) else "HIGH"
+
+            parts.append(
+                f"**Analysis of Shipment {sid} ({route_str} | Priority: {priority_str}):**\n"
+                f"• Disruption Probability: **{prob:.1%}** | Expected Delay: **{delay:.1f}h**\n"
+                f"\n**Top Contributing SHAP Factors:**"
+            )
+            for i, f in enumerate(factors[:5], 1):
+                direction = "increasing delay" if f["contribution"] > 0 else "reducing delay"
+                parts.append(f"  {i}. **{f['label']}** (value: {f['value']:.2f}, impact: {f['contribution']:+.3f} — {direction})")
+
+            # Dynamic recommendation based on primary risk factor
+            top_factor_name = factors[0]["label"].lower() if factors else ""
+            if "weather" in top_factor_name:
+                rec = f"Activate severe weather detour protocols for {sid}. Re-route around storm systems to save up to {delay:.1f}h."
+            elif "warehouse" in top_factor_name:
+                rec = f"Issue priority dock receiving notice to destination warehouse for {sid} to eliminate the {delay:.1f}h bottleneck."
+            elif "traffic" in top_factor_name or "port" in top_factor_name:
+                rec = f"Reschedule {sid} departure to off-peak transit window or assign bypass corridor to avoid major congestion."
+            elif "supplier" in top_factor_name:
+                rec = f"Flag supplier reliability alert for {sid} and coordinate secondary supplier fallback."
+            else:
+                rec = f"Prioritize vehicle assignment and real-time GPS tracking for {sid} to protect delivery deadline."
+
+            parts.append(f"\n**Operational Recommendation:** {rec}")
+            return "\n".join(parts).strip()
+
+        # ── 2. Regional Risk Analysis ──────────────────────────────────────────
+        if "get_regional_risk" in results:
+            reg_data = results["get_regional_risk"]
+            highest = reg_data.get("highest_region", "Unknown")
+            high_score = reg_data.get("highest_risk_score", 0)
+            shipment_cnt = reg_data.get("shipment_count", 0)
+            disrupt_rate = reg_data.get("disruption_rate", 0)
+            avg_delay = reg_data.get("avg_delay", 0)
+            all_regs = reg_data.get("all_regions", [])
+
+            parts.append(
+                f"**Regional Disruption Risk Analysis:**\n"
+                f"• **Highest-Risk Origin Region:** **{highest}**\n"
+                f"• Average Risk Score: **{high_score:.1%}** | Disruption Rate: **{disrupt_rate:.1%}**\n"
+                f"• Active Shipments: **{shipment_cnt}** | Average Delay: **{avg_delay:.1f}h**\n"
+                f"\n**Top Origin Corridors by Risk Score:**"
+            )
+            for r in all_regs:
+                parts.append(f"• **{r['origin']}**: {r['avg_risk']:.1%} risk score | {r['shipment_count']} shipments | {r['avg_delay']:.1f}h avg delay")
+
+            parts.append(
+                f"\n**Operational Recommendation:** Focus monitoring on freight originating from **{highest}**. "
+                f"Pre-allocate buffer transit windows and dispatch highest-reliability vehicles (score > 0.85) on {highest} routes."
+            )
+            return "\n".join(parts).strip()
+
+        # ── 3. High-Risk Shipments List ────────────────────────────────────────
         if "get_high_risk_shipments" in results:
             high_risk = results["get_high_risk_shipments"]
             if not high_risk:
-                parts.append("No HIGH or CRITICAL risk shipments found in the current dataset.")
+                parts.append("No HIGH or CRITICAL risk shipments found in the current operational dataset.")
             else:
-                parts.append(f"**{len(high_risk)} high/critical risk shipments identified:**\n")
+                parts.append(f"**Identified {len(high_risk)} Critical/High-Risk Shipments Requiring Immediate Attention:**\n")
                 for s in high_risk[:5]:
                     prob = s.get("disruption_probability", 0)
                     delay = s.get("expected_delay_hours", 0)
                     sid = s.get("shipment_id", "?")
                     level = s.get("risk_level", "?")
                     priority = s.get("priority", "?")
+                    origin = s.get("origin", "?")
+                    dest = s.get("destination", "?")
                     parts.append(
-                        f"• **{sid}** — {level} risk | {priority} priority | "
-                        f"Disruption probability: {prob:.0%} | Expected delay: {delay:.1f}h"
+                        f"• **{sid}** ({origin} → {dest}) — **{level}** risk | **{priority}** priority | "
+                        f"Disruption prob: {prob:.0%} | Est. delay: {delay:.1f}h"
                     )
                 top = high_risk[0]
                 parts.append(
-                    f"\n**Recommended action:** {top.get('shipment_id')} requires immediate "
-                    f"attention. Disruption probability is {top.get('disruption_probability', 0):.0%}."
+                    f"\n**Operational Recommendation:** Immediately escalate **{top.get('shipment_id')}** and top critical shipments. "
+                    f"Trigger dispatch reassignments using the Fleet Optimizer to protect SLAs and prevent delivery breaches."
                 )
+            return "\n".join(parts).strip()
 
-        # Root cause / analysis response
-        if "analyze_root_cause" in results:
-            analysis = results["analyze_root_cause"]
-            if analysis.get("top_factors"):
-                sid = analysis.get("shipment_id", shipment_id or "selected shipment")
-                prob = analysis.get("disruption_probability", 0)
-                delay = analysis.get("expected_delay_hours", 0)
-                factors = analysis.get("top_factors", [])
-                parts.append(
-                    f"\n**Root cause analysis for {sid}:**\n"
-                    f"Disruption probability: {prob:.0%} | Expected delay: {delay:.1f}h\n"
-                    f"\nTop contributing factors to the model's prediction:"
-                )
-                for i, f in enumerate(factors[:5], 1):
-                    parts.append(f"  {i}. {f['label']} (value: {f['value']:.3f}, contribution: {f['contribution']:+.4f})")
-
-        # Shipment details response
-        if "get_shipment_details" in results and isinstance(results["get_shipment_details"], dict):
-            details = results["get_shipment_details"]
-            if details.get("shipment_id"):
-                parts.append(
-                    f"\n**Shipment {details.get('shipment_id')}:** "
-                    f"{details.get('origin')} → {details.get('destination')}, "
-                    f"{details.get('distance_km', 0):.0f} km, "
-                    f"cargo {details.get('cargo_weight_kg', 0):.0f} kg, "
-                    f"priority: {details.get('priority')}, "
-                    f"deadline: {details.get('delivery_deadline_hours')}h"
-                )
-
-        # Fleet status response
-        if "get_fleet_status" in results:
-            fleet_data = results["get_fleet_status"]
-            total = fleet_data.get("total", 0)
-            avail = fleet_data.get("available", 0)
-            parts.append(
-                f"\n**Fleet status:** {avail}/{total} vehicles available."
-            )
-
-        # Optimization response
+        # ── 4. Fleet Optimization ──────────────────────────────────────────────
         if "optimize_fleet" in results:
             opt = results["optimize_fleet"]
             assignments = opt.get("assignments", [])
@@ -356,18 +410,25 @@ class SupplyChainAgent:
             cost = opt.get("total_estimated_cost", 0)
             util_before = opt.get("utilization_before", 0)
             util_after = opt.get("utilization_after", 0)
+            status = opt.get("solver_status", "OPTIMAL")
+
             parts.append(
-                f"\n**Fleet optimization result ({opt.get('solver_status', '?')}):**\n"
-                f"• {len(feasible)} assignments made | "
-                f"{len(unassigned)} unassigned shipments\n"
-                f"• Total estimated cost: ${cost:,.0f}\n"
-                f"• Fleet utilization: {util_before:.0%} → {util_after:.0%}\n"
-                f"• High/critical risk shipments assigned: {opt.get('high_risk_reduced', 0)}"
+                f"**Google OR-Tools Fleet Optimization Results ({status}):**\n"
+                f"• Assignments Created: **{len(feasible)}** feasible vehicle-to-shipment allocations\n"
+                f"• Fleet Utilization: **{util_before:.1%} → {util_after:.1%}** (+{util_after - util_before:.1%})\n"
+                f"• Total Estimated Operating Cost: **${cost:,.0f}**\n"
+                f"• High-Priority Shipments Covered: **{opt.get('high_risk_reduced', 0)}**"
             )
             if unassigned:
-                parts.append(f"• Unassigned (constraint violations): {', '.join(unassigned[:5])}")
+                parts.append(f"• Unassigned (exceeds vehicle capacity/availability): {', '.join(unassigned[:5])}")
 
-        # Simulation response
+            parts.append(
+                f"\n**Operational Recommendation:** Apply the optimization in the Fleet Optimizer page to commit all "
+                f"{len(feasible)} vehicle assignments and boost operational fleet utilization to {util_after:.0%}."
+            )
+            return "\n".join(parts).strip()
+
+        # ── 5. What-If Simulation ──────────────────────────────────────────────
         if "run_simulation" in results:
             sim = results["run_simulation"]
             label = sim.get("simulation_label", "Custom scenario")
@@ -377,31 +438,57 @@ class SupplyChainAgent:
             prob_delta = delta.get("disruption_probability_avg", 0)
             delay_delta = delta.get("expected_delay_avg_hours", 0)
             risk_delta = delta.get("high_risk_count", 0)
+
             parts.append(
-                f"\n**Simulation result — {label}:**\n"
-                f"| Metric | Current | Simulated | Change |\n"
-                f"|---|---|---|---|\n"
-                f"| Avg disruption probability | {current.get('disruption_probability_avg', 0):.1%} | "
-                f"{simulated.get('disruption_probability_avg', 0):.1%} | {prob_delta:+.1%} |\n"
-                f"| Avg expected delay | {current.get('expected_delay_avg_hours', 0):.1f}h | "
-                f"{simulated.get('expected_delay_avg_hours', 0):.1f}h | {delay_delta:+.1f}h |\n"
-                f"| High-risk shipments | {current.get('high_risk_count', 0)} | "
-                f"{simulated.get('high_risk_count', 0)} | {int(risk_delta):+d} |"
+                f"**What-If Scenario Simulation ({label}):**\n"
+                f"• Average Disruption Probability: **{current.get('disruption_probability_avg', 0):.1%} → {simulated.get('disruption_probability_avg', 0):.1%}** ({prob_delta:+.1%})\n"
+                f"• Average Expected Delay: **{current.get('expected_delay_avg_hours', 0):.1f}h → {simulated.get('expected_delay_avg_hours', 0):.1f}h** ({delay_delta:+.1f}h)\n"
+                f"• High-Risk Shipments: **{current.get('high_risk_count', 0)} → {simulated.get('high_risk_count', 0)}** ({int(risk_delta):+d})\n"
+                f"• Estimated Fleet Cost: **${current.get('estimated_fleet_cost', 0):,.0f} → ${simulated.get('estimated_fleet_cost', 0):,.0f}**"
             )
 
-        # Policy context from RAG
-        if rag_context:
-            parts.append(f"\n**Relevant policy:**{rag_context[:400]}")
+            rec = (
+                f"Under this scenario delay increases by {delay_delta:+.1f}h. Pre-position {max(1, int(abs(risk_delta)))} backup vehicles "
+                f"and extend customer delivery promises by +{abs(delay_delta):.1f}h."
+                if delay_delta > 0 else
+                f"Favorable scenario reduces expected delays by {abs(delay_delta):.1f}h. Consolidate routes to maximize vehicle capacity savings."
+            )
+            parts.append(f"\n**Operational Recommendation:** {rec}")
+            return "\n".join(parts).strip()
 
-        # All shipments fallback
-        if not parts and "get_shipments" in results:
+        # ── 6. Operational Policy (RAG) ────────────────────────────────────────
+        if "get_policy" in results or rag_context:
+            parts.append(
+                f"**Operational Policy Knowledge Retrieval:**\n"
+                f"{rag_context.strip() if rag_context else 'Operational policies loaded.'}"
+            )
+            parts.append(
+                "\n**Operational Recommendation:** Align all manual overrides with the priority rules. "
+                "CRITICAL shipments must be assigned only to vehicles with availability=true and reliability >= 0.70."
+            )
+            return "\n".join(parts).strip()
+
+        # ── 7. Fleet Status ────────────────────────────────────────────────────
+        if "get_fleet_status" in results:
+            fleet_data = results["get_fleet_status"]
+            total = fleet_data.get("total", 0)
+            avail = fleet_data.get("available", 0)
+            parts.append(
+                f"**Live Fleet Capacity Overview:**\n"
+                f"• Available Vehicles: **{avail}/{total}** ({avail / max(total, 1):.0%})\n"
+                f"• Active In-Transit / Maintenance: **{total - avail}**"
+            )
+            parts.append(
+                "\n**Operational Recommendation:** Run the Fleet Optimizer to allocate available capacity to high-priority shipments."
+            )
+            return "\n".join(parts).strip()
+
+        # ── 8. Default Fallback ────────────────────────────────────────────────
+        if "get_shipments" in results:
             shipments = results["get_shipments"]
-            parts.append(f"Current operational data shows {len(shipments)} active shipments.")
+            parts.append(f"**Supply Chain Overview:** Currently monitoring **{len(shipments)}** active tracked shipments.")
+            parts.append("\n**Operational Recommendation:** Ask about high-risk shipments, specific shipment IDs, regional risk, or fleet optimization.")
+            return "\n".join(parts).strip()
 
-        if not parts:
-            parts.append(
-                "I couldn't find specific data to answer that question. "
-                "Try asking about a specific shipment ID, risk levels, fleet status, or optimization."
-            )
+        return "I analyzed the operational data. Ask about specific shipment IDs (e.g., 'Why is SH-1001 at risk?'), 'Which region is most risky?', 'Optimize the fleet', or 'Simulate weather increase'."
 
-        return "\n".join(parts).strip()

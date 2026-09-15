@@ -1,7 +1,8 @@
 'use client';
 import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Bot, User, Wrench } from 'lucide-react';
+import { Send, Loader2, Bot, User, Wrench, Sparkles } from 'lucide-react';
 import { api, type CopilotResponse } from '@/lib/api';
+import { useOperations } from '@/lib/OperationsContext';
 
 interface Message {
   id: number;
@@ -13,10 +14,11 @@ interface Message {
 
 const EXAMPLES = [
   'Which shipments need immediate attention?',
-  'Why is the highest-risk shipment delayed?',
-  'Optimize the fleet assignment.',
-  'Which shipments will likely miss their deadline?',
-  'What should I do about critical risk shipments?',
+  'Why is SH-1001 at risk?',
+  'Optimize the fleet',
+  'What if traffic increases?',
+  'What is the fleet policy?',
+  'Which region is most risky?',
 ];
 
 let msgId = 0;
@@ -26,12 +28,14 @@ export default function CopilotPage() {
     {
       id: ++msgId,
       role: 'assistant',
-      text: "Hello! I'm the SupplyChainAI Copilot. I can investigate shipment risks, analyze root causes, optimize fleet assignments, and run simulations. What would you like to know?",
+      text: "Hello! I'm the SupplyChainAI Copilot. I can investigate shipment risks, analyze root causes, optimize fleet assignments, evaluate regional corridor risks, and run what-if simulations. What would you like to know?",
     },
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const { recordCopilot } = useOperations();
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -56,6 +60,8 @@ export default function CopilotPage() {
           sources: res.sources,
         },
       ]);
+      const toolNames = res.tools_used ? res.tools_used.map((t) => t.tool_name) : [];
+      recordCopilot(text, toolNames);
     } catch (e) {
       setMessages((m) => [
         ...m,
@@ -65,6 +71,7 @@ export default function CopilotPage() {
       setLoading(false);
     }
   };
+
 
   return (
     <div className="flex flex-col h-full">

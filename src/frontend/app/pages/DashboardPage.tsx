@@ -1,11 +1,15 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { AlertTriangle, TrendingUp, Truck, Package, RefreshCw, ExternalLink } from 'lucide-react';
+import {
+  AlertTriangle, TrendingUp, Truck, Package, RefreshCw, ExternalLink,
+  CheckCircle2, Clock, Activity, ShieldAlert, Sparkles, X, ArrowRight
+} from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from 'recharts';
 import { api, isConnectionError, formatErrorMessage, type MetricsResponse, type Shipment } from '@/lib/api';
+import { useOperations } from '@/lib/OperationsContext';
 import { riskBg, riskBarColor, pct, fmt } from '@/lib/utils';
 
 const PIE_COLORS: Record<string, string> = {
@@ -17,6 +21,16 @@ export default function DashboardPage() {
   const [topRisk, setTopRisk] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  const {
+    appliedOptimization,
+    optimizationTime,
+    lastAnalysisTime,
+    lastSimulationTime,
+    activityLog,
+    resetOptimization,
+    getAdjustedKPIs,
+  } = useOperations();
 
   const load = async () => {
     setLoading(true);
@@ -38,52 +52,258 @@ export default function DashboardPage() {
   if (error) return <ErrorState msg={error} onRetry={load} />;
   if (!metrics) return null;
 
-  const { kpis, risk_distribution, delay_trend, region_risk } = metrics;
+  const { risk_distribution, delay_trend, region_risk } = metrics;
+  const liveKPIs = getAdjustedKPIs(metrics.kpis);
+
+  // Dynamic recommendations derived from real data
+  const recommendations: Array<{ id: string; title: string; desc: string; priority: 'CRITICAL' | 'HIGH' | 'INFO' }> = [];
+
+  const highestRiskRegion = [...region_risk].sort((a, b) => b.avg_risk_score - a.avg_risk_score)[0];
+  if (highestRiskRegion && highestRiskRegion.avg_risk_score > 0.45) {
+    recommendations.push({
+      id: 'rec-reg',
+      title: `Prioritize ${highestRiskRegion.region} Corridor`,
+      desc: `Highest average disruption risk (${(highestRiskRegion.avg_risk_score * 100).toFixed(0)}% across ${highestRiskRegion.shipment_count} shipments). Re-route or pre-assign backup carriers.`,
+      priority: highestRiskRegion.avg_risk_score > 0.65 ? 'CRITICAL' : 'HIGH',
+    });
+  }
+
+  if (liveKPIs.critical_risk_count > 0 || liveKPIs.high_risk_count > 0) {
+    recommendations.push({
+      id: 'rec-risk',
+      title: `Mitigate ${liveKPIs.critical_risk_count + liveKPIs.high_risk_count} High/Critical Risk Shipments`,
+      desc: `${liveKPIs.critical_risk_count} critical shipments require driver rerouting or urgent warehouse prioritization to prevent ETA breaches.`,
+      priority: 'CRITICAL',
+    });
+  }
+
+  if (delay_trend.length > 0 && delay_trend[0].avg_delay_hours > 3.0) {
+    recommendations.push({
+      id: 'rec-delay',
+      title: `Address Origin Bottleneck in ${delay_trend[0].label}`,
+      desc: `Origin averages ${delay_trend[0].avg_delay_hours.toFixed(1)}h delay. Coordinate with dispatch facilities to relieve dock congestion.`,
+      priority: 'HIGH',
+    });
+  }
+
+  if (appliedOptimization) {
+    const assigned = appliedOptimization.assignments.filter((a) => a.feasible).length;
+    recommendations.push({
+      id: 'rec-opt',
+      title: `OR-Tools Fleet Plan Active`,
+      desc: `${assigned} vehicles reallocated. Utilization increased to ${(appliedOptimization.utilization_after * 100).toFixed(0)}% with ${appliedOptimization.high_risk_reduced} high-priority assignments secured.`,
+      priority: 'INFO',
+    });
+  } else {
+    recommendations.push({
+      id: 'rec-opt-prompt',
+      title: `Run Fleet Optimization`,
+      desc: `Current fleet utilization is ${pct(liveKPIs.fleet_utilization_avg)}. Execute OR-Tools solver to balance capacity and reduce total transit costs.`,
+      priority: 'INFO',
+    });
+  }
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-white">Executive Dashboard</h1>
-          <p className="text-sm text-slate-400 mt-0.5">Live operational overview — {kpis.total_shipments} active shipments</p>
+      {/* Header & Status Bar */}
+      <div className="space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold text-white">Executive Dashboard</h1>
+            <p className="text-sm text-slate-400 mt-0.5">Live operational overview — {liveKPIs.total_shipments} active shipments</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={load} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition-colors cursor-pointer">
+              <RefreshCw className="w-3.5 h-3.5" /> Refresh
+            </button>
+          </div>
         </div>
-        <button onClick={load} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition-colors">
-          <RefreshCw className="w-3.5 h-3.5" /> Refresh
-        </button>
+
+        {/* System Status & Last Updated Bar */}
+        <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+            <span className="text-slate-300 font-medium">System Status: <strong className="text-emerald-400 font-semibold">Operational</strong></span>
+            <span className="text-slate-600 hidden md:inline">|</span>
+            <span className="text-slate-500 hidden md:inline">ML Engine (XGBoost + SHAP) & OR-Tools Solver</span>
+          </div>
+
+          <div className="flex items-center gap-4 text-slate-400">
+            <div>
+              <span className="text-slate-500">Last Analysis: </span>
+              <span className="text-slate-200 font-mono">{lastAnalysisTime || 'Continuous'}</span>
+            </div>
+            <div>
+              <span className="text-slate-500">Last Optimization: </span>
+              <span className="text-slate-200 font-mono">{optimizationTime || 'None in session'}</span>
+            </div>
+            <div className="hidden lg:block">
+              <span className="text-slate-500">Last Simulation: </span>
+              <span className="text-slate-200 font-mono">{lastSimulationTime || 'None in session'}</span>
+            </div>
+          </div>
+        </div>
       </div>
+
+      {/* Applied Optimization Banner */}
+      {appliedOptimization && (
+        <div className="bg-gradient-to-r from-blue-950/80 via-indigo-950/60 to-slate-900 border border-blue-500/40 rounded-xl p-4 shadow-lg shadow-blue-950/40">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-500/20 border border-blue-500/30 rounded-lg text-blue-400 mt-0.5">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wider bg-blue-500 text-white px-2 py-0.5 rounded">
+                    Optimization Applied
+                  </span>
+                  <span className="text-xs text-slate-400">at {optimizationTime}</span>
+                </div>
+                <p className="text-sm text-slate-200 mt-1">
+                  Live dashboard KPIs adjusted by OR-Tools solver allocation.
+                </p>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs">
+                  <span className="text-slate-400">
+                    Fleet Utilization: <strong className="text-blue-300 font-mono">{pct(appliedOptimization.utilization_before)} → {pct(appliedOptimization.utilization_after)}</strong> ({pct(appliedOptimization.utilization_after - appliedOptimization.utilization_before)} gain)
+                  </span>
+                  <span className="text-slate-400">
+                    High-Risk Mitigated: <strong className="text-emerald-300 font-mono">{appliedOptimization.high_risk_reduced} shipments</strong>
+                  </span>
+                  <span className="text-slate-400">
+                    Est. Cost: <strong className="text-slate-200 font-mono">${appliedOptimization.total_estimated_cost.toLocaleString('en-US', { maximumFractionDigits: 0 })}</strong>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={resetOptimization}
+              className="self-start md:self-center flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition-colors cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" /> Revert to Baseline
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
           label="Total Shipments"
-          value={String(kpis.total_shipments)}
-          sub={`${kpis.disrupted_count} disrupted`}
+          value={String(liveKPIs.total_shipments)}
+          sub={`${liveKPIs.disrupted_count} disrupted`}
           icon={<Package className="w-5 h-5 text-blue-400" />}
           color="border-blue-500/20"
         />
         <KPICard
           label="High / Critical Risk"
-          value={`${kpis.high_risk_count + kpis.critical_risk_count}`}
-          sub={`${kpis.critical_risk_count} critical`}
+          value={`${liveKPIs.high_risk_count + liveKPIs.critical_risk_count}`}
+          sub={appliedOptimization ? `${liveKPIs.critical_risk_count} critical (${appliedOptimization.high_risk_reduced} mitigated)` : `${liveKPIs.critical_risk_count} critical`}
           icon={<AlertTriangle className="w-5 h-5 text-red-400" />}
           color="border-red-500/20"
-          alert={kpis.critical_risk_count > 0}
+          alert={liveKPIs.critical_risk_count > 0}
         />
         <KPICard
           label="On-Time Rate"
-          value={pct(kpis.on_time_rate)}
-          sub={`${kpis.at_risk_count} at risk`}
+          value={pct(liveKPIs.on_time_rate)}
+          sub={`${liveKPIs.at_risk_count} at risk`}
           icon={<TrendingUp className="w-5 h-5 text-green-400" />}
           color="border-green-500/20"
         />
         <KPICard
           label="Fleet Utilization"
-          value={pct(kpis.fleet_utilization_avg)}
-          sub={`Avg disruption: ${pct(kpis.avg_disruption_probability)}`}
+          value={pct(liveKPIs.fleet_utilization_avg)}
+          sub={appliedOptimization ? `Optimal: ${pct(appliedOptimization.utilization_after)}` : `Avg disruption: ${pct(liveKPIs.avg_disruption_probability)}`}
           icon={<Truck className="w-5 h-5 text-purple-400" />}
           color="border-purple-500/20"
         />
+      </div>
+
+      {/* Dynamic Recommended Actions & Live Operations Activity Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Recommended Actions */}
+        <div className="bg-slate-900 rounded-xl border border-slate-800 p-4 flex flex-col">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 text-blue-400" />
+              <h3 className="text-sm font-semibold text-slate-200">Dynamic Operational Actions</h3>
+            </div>
+            <span className="text-xs text-slate-500 font-mono">Live derived</span>
+          </div>
+
+          <div className="space-y-2.5 flex-1">
+            {recommendations.map((rec) => (
+              <div
+                key={rec.id}
+                className={`p-3 rounded-lg border text-xs ${
+                  rec.priority === 'CRITICAL'
+                    ? 'bg-red-950/20 border-red-500/30'
+                    : rec.priority === 'HIGH'
+                    ? 'bg-orange-950/20 border-orange-500/30'
+                    : 'bg-blue-950/20 border-blue-500/30'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-semibold text-slate-200">{rec.title}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded text-[10px] font-medium uppercase ${
+                      rec.priority === 'CRITICAL'
+                        ? 'bg-red-900/60 text-red-300'
+                        : rec.priority === 'HIGH'
+                        ? 'bg-orange-900/60 text-orange-300'
+                        : 'bg-blue-900/60 text-blue-300'
+                    }`}
+                  >
+                    {rec.priority}
+                  </span>
+                </div>
+                <p className="text-slate-400 leading-relaxed">{rec.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Live Operations Activity */}
+        <div className="bg-slate-900 rounded-xl border border-slate-800 p-4 flex flex-col">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Activity className="w-4 h-4 text-emerald-400" />
+              <h3 className="text-sm font-semibold text-slate-200">Live Operations Activity</h3>
+            </div>
+            <span className="text-xs text-slate-500 font-mono">{activityLog.length} events</span>
+          </div>
+
+          <div className="space-y-2 flex-1 max-h-64 overflow-y-auto pr-1">
+            {activityLog.map((act) => (
+              <div key={act.id} className="flex items-start gap-2.5 p-2 bg-slate-800/40 rounded-lg border border-slate-800/60">
+                <div className="mt-0.5 flex-shrink-0">
+                  {act.type === 'optimization' ? (
+                    <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+                  ) : act.type === 'investigation' ? (
+                    <AlertTriangle className="w-3.5 h-3.5 text-orange-400" />
+                  ) : act.type === 'simulation' ? (
+                    <TrendingUp className="w-3.5 h-3.5 text-purple-400" />
+                  ) : act.type === 'copilot' ? (
+                    <Clock className="w-3.5 h-3.5 text-teal-400" />
+                  ) : (
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1">
+                    <p className="text-xs font-medium text-slate-200 truncate">{act.title}</p>
+                    <span className="text-[10px] text-slate-500 font-mono flex-shrink-0">{act.timestamp}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">{act.description}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Charts row */}
@@ -220,6 +440,7 @@ export default function DashboardPage() {
     </div>
   );
 }
+
 
 function KPICard({ label, value, sub, icon, color, alert }: {
   label: string; value: string; sub: string; icon: React.ReactNode;

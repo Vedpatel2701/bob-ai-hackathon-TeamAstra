@@ -77,11 +77,23 @@ def test_backend_integration():
         sim = r.json()
         assert sim['delta']['disruption_probability_avg'] > 0
 
-        # Copilot (uses cache for get_high_risk_shipments)
-        r = client.post('/api/copilot', json={'message': 'Which shipments need immediate attention?'})
-        assert r.status_code == 200
-        cop = r.json()
-        assert len(cop['answer']) > 50
+        # Copilot question-specific validations
+        questions = [
+            "Which shipments need immediate attention?",
+            "Why is SH-1001 at risk?",
+            "Optimize the fleet",
+            "What if traffic increases?",
+            "What is the fleet policy?",
+            "Which region is most risky?",
+        ]
+        for q in questions:
+            r = client.post('/api/copilot', json={'message': q})
+            assert r.status_code == 200, f"Copilot failed for question: {q}"
+            cop = r.json()
+            assert len(cop['answer']) > 40
+            assert 'Operational Recommendation:' in cop['answer']
+            assert len(cop.get('tools_used', [])) > 0 or len(cop.get('sources', [])) > 0
+
 
 
 if __name__ == '__main__':

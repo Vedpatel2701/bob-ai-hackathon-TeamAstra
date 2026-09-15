@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, ChevronRight, RefreshCw } from 'lucide-react';
 import { api, type Shipment, type PredictResponse } from '@/lib/api';
+import { useOperations } from '@/lib/OperationsContext';
 import { riskBg, pct, fmt } from '@/lib/utils';
 
 export default function RiskCenterPage() {
@@ -11,6 +12,8 @@ export default function RiskCenterPage() {
   const [loading, setLoading] = useState(true);
   const [predLoading, setPredLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const { recordInvestigation } = useOperations();
 
   const load = async () => {
     setLoading(true);
@@ -45,9 +48,11 @@ export default function RiskCenterPage() {
         priority: s.priority,
       });
       setPrediction(res);
+      recordInvestigation(s.shipment_id, res.risk_level, res.disruption_probability, res.expected_delay_hours);
     } catch (e) { console.error(e); }
     finally { setPredLoading(false); }
   };
+
 
   return (
     <div className="flex h-full">
